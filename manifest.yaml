@@ -1,0 +1,559 @@
+Descriptor:
+  Name: O365SecurityCopilotSkillset
+  DisplayName: O365 Security Copilot Skillset
+  Description: >
+    KQL-based investigation skills and an orchestration agent for Microsoft 365 security
+    domains including email, identity, mailbox, SharePoint, OneDrive, and admin audit.
+    Designed for SOC analysts using Microsoft Security Copilot.
+  SupportedAuthTypes:
+    - None
+
+SkillGroups:
+
+  # -------------------------------------------------------------------------
+  # Domain 1: Email Security
+  # Tables: EmailEvents, EmailAttachmentInfo, EmailUrlInfo, EmailPostDeliveryEvents
+  # -------------------------------------------------------------------------
+  - Format: KQL
+    Skills:
+
+      - Name: GetEmailByNetworkMessageId
+        DisplayName: Get Email By Network Message ID
+        Description: Fetches full email details by NetworkMessageId including attachments, URLs, threat types, and delivery location for phishing or malware investigation.
+        Inputs:
+          - Name: networkMessageId
+            Description: The NetworkMessageId GUID of the email to investigate
+            Required: true
+        Settings:
+          Target: Defender
+          Template: |
+            EmailEvents
+            | where NetworkMessageId =~ '{{networkMessageId}}'
+            | join kind=leftouter (
+                EmailAttachmentInfo
+                | where NetworkMessageId =~ '{{networkMessageId}}'
+              ) on NetworkMessageId
+            | join kind=leftouter (
+                EmailUrlInfo
+                | where NetworkMessageId =~ '{{networkMessageId}}'
+              ) on NetworkMessageId
+            | project Timestamp, SenderFromAddress, SenderDisplayName,
+                      RecipientEmailAddress, Subject, ThreatTypes,
+                      DetectionMethods, DeliveryAction, DeliveryLocation,
+                      FileName, FileType, ThreatNames, Url
+            | take 50
+
+      - Name: GetEmailsFromSuspiciousSender
+        DisplayName: Get Emails From Suspicious Sender
+        Description: Lists recent emails from a specified sender across all recipients to assess the blast radius of a phishing campaign or BEC attack.
+        Inputs:
+          - Name: senderAddress
+            Description: The email address of the suspicious sender to investigate
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            EmailEvents
+            | where SenderFromAddress =~ '{{senderAddress}}'
+                or SenderMailFromAddress =~ '{{senderAddress}}'
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | project Timestamp, NetworkMessageId, RecipientEmailAddress,
+                      Subject, ThreatTypes, DeliveryAction, DeliveryLocation,
+                      SenderIPv4, SenderFromDomain
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetEmailsWithMaliciousContent
+        DisplayName: Get Emails With Malicious Content
+        Description: Finds emails flagged for malware, phishing, or high-confidence phishing across all mailboxes with threat details and delivery location.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            EmailEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ThreatTypes has_any ("Malware", "Phish", "HighConfPhish")
+                or DetectionMethods has_any ("Antimalware engine", "URL detonation",
+                                             "File detonation", "Campaign")
+            | project Timestamp, NetworkMessageId, SenderFromAddress,
+                      RecipientEmailAddress, Subject, ThreatTypes,
+                      DetectionMethods, DeliveryAction, DeliveryLocation
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetEmailDeliveryTimeline
+        DisplayName: Get Email Delivery Timeline
+        Description: Traces the full end-to-end delivery and post-delivery action timeline for a specific email to understand detection history and remediation status.
+        Inputs:
+          - Name: networkMessageId
+            Description: The NetworkMessageId GUID of the email to trace
+            Required: true
+        Settings:
+          Target: Defender
+          Template: |
+            let msgId = '{{networkMessageId}}';
+            EmailEvents
+            | where NetworkMessageId =~ msgId
+            | project Timestamp, EventType="InitialDelivery", NetworkMessageId,
+                      SenderFromAddress, RecipientEmailAddress, Subject,
+                      DeliveryAction, DeliveryLocation, ThreatTypes, DetectionMethods
+            | union (
+                EmailPostDeliveryEvents
+                | where NetworkMessageId =~ msgId
+                | project Timestamp, EventType="PostDelivery", NetworkMessageId,
+                          SenderFromAddress="", RecipientEmailAddress, Subject="",
+                          DeliveryAction=Action, DeliveryLocation,
+                          ThreatTypes, DetectionMethods
+              )
+            | order by Timestamp asc
+
+  # -------------------------------------------------------------------------
+  # Domain 2: Identity and Access
+  # Tables: EntraIdSignInEvents, IdentityDirectoryEvents
+  # -------------------------------------------------------------------------
+  - Format: KQL
+    Skills:
+
+      - Name: GetRiskySignInsForUser
+        DisplayName: Get Risky Sign-Ins For User
+        Description: Returns failed and high-risk sign-in events for a user with IP, country, and risk level to detect credential stuffing or account compromise.
+        Inputs:
+          - Name: userPrincipalName
+            Description: User Principal Name or display name to investigate
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            EntraIdSignInEvents
+            | where AccountUpn =~ '{{userPrincipalName}}'
+                or AccountDisplayName =~ '{{userPrincipalName}}'
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ErrorCode != 0 or RiskLevelAggregated >= 10
+            | project Timestamp, AccountUpn, AccountDisplayName, IPAddress,
+                      Country, City, ErrorCode, FailureReason,
+                      RiskLevelAggregated, RiskState, RiskDetails,
+                      AuthenticationRequirement, ConditionalAccessStatus, Application
+            | order by Timestamp desc
+            | take 100
+
+      - Name: GetMFAStatusForUser
+        DisplayName: Get MFA Status For User
+        Description: Checks recent successful sign-ins to identify sessions where MFA was not required or bypassed, revealing gaps in MFA enforcement for the user.
+        Inputs:
+          - Name: userPrincipalName
+            Description: User Principal Name to check MFA compliance for
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            EntraIdSignInEvents
+            | where AccountUpn =~ '{{userPrincipalName}}'
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ErrorCode == 0
+            | project Timestamp, AccountUpn, IPAddress, Country, Application,
+                      AuthenticationRequirement, AuthenticationDetails,
+                      ConditionalAccessStatus, RiskLevelAggregated
+            | extend MFARequired = iff(AuthenticationRequirement == "multiFactorAuthentication",
+                                       "Yes", "No")
+            | order by Timestamp desc
+            | take 100
+
+      - Name: GetPrivilegedRoleChanges
+        DisplayName: Get Privileged Role Changes
+        Description: Audits recent Entra ID privileged role assignment additions and removals to detect unauthorized privilege escalation or persistence by an attacker.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            IdentityDirectoryEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ActionType in ("Add member to role", "Remove member from role",
+                                   "Add eligible member to role",
+                                   "Remove eligible member from role")
+            | project Timestamp, ActionType, AccountDisplayName, AccountUpn,
+                      TargetAccountDisplayName, TargetAccountUpn,
+                      AdditionalFields, IPAddress, Location
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetConditionalAccessFailures
+        DisplayName: Get Conditional Access Failures
+        Description: Lists sign-ins where conditional access policies were not applied or blocked to identify policy gaps or misconfigured CA rules across the tenant.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            EntraIdSignInEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ConditionalAccessStatus != 0
+            | project Timestamp, AccountUpn, AccountDisplayName, IPAddress,
+                      Country, Application, ConditionalAccessStatus,
+                      ConditionalAccessPolicies, ErrorCode, FailureReason,
+                      RiskLevelAggregated
+            | order by Timestamp desc
+            | take 200
+
+  # -------------------------------------------------------------------------
+  # Domain 3: Mailbox and Exchange
+  # Table: CloudAppEvents (Application: Microsoft Exchange Online)
+  # -------------------------------------------------------------------------
+  - Format: KQL
+    Skills:
+
+      - Name: GetMailboxPermissionChanges
+        DisplayName: Get Mailbox Permission Changes
+        Description: Detects mailbox delegate and full-access permission grants in Exchange Online. A primary Business Email Compromise (BEC) persistence indicator.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application == "Microsoft Exchange Online"
+            | where ActionType in ("Add-MailboxPermission", "Set-Mailbox",
+                                   "Add-RecipientPermission", "Add delegate")
+            | project Timestamp, ActionType, AccountDisplayName, AccountObjectId,
+                      IPAddress, City, CountryCode, ObjectName, AdditionalFields
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetMailForwardingRuleChanges
+        DisplayName: Get Mail Forwarding Rule Changes
+        Description: Identifies new or modified inbox and transport rules that forward email externally. External forwarding rules are the primary BEC persistence mechanism.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application == "Microsoft Exchange Online"
+            | where ActionType in ("New-InboxRule", "Set-InboxRule",
+                                   "New-TransportRule", "Set-TransportRule",
+                                   "Set-Mailbox")
+            | extend RuleDetails = tostring(AdditionalFields)
+            | where RuleDetails has_any ("ForwardTo", "RedirectTo",
+                                         "ForwardAsAttachmentTo", "BlindCopyTo",
+                                         "SmtpForwardingAddress")
+            | project Timestamp, ActionType, AccountDisplayName, AccountObjectId,
+                      IPAddress, ObjectName, RuleDetails
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetSuspiciousMailboxAccess
+        DisplayName: Get Suspicious Mailbox Access
+        Description: Finds anomalous mailbox access patterns such as multi-country access or high-volume activity per hour that indicate a compromised Exchange account.
+        Inputs:
+          - Name: userDisplayName
+            Description: Display name or ObjectId of the mailbox owner to investigate
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application == "Microsoft Exchange Online"
+            | where AccountDisplayName =~ '{{userDisplayName}}'
+                or AccountObjectId =~ '{{userDisplayName}}'
+            | where ActionType in ("MailItemsAccessed", "Send", "MoveToDeletedItems",
+                                   "HardDelete", "SoftDelete")
+            | summarize AccessCount=count(),
+                        Countries=make_set(CountryCode),
+                        IPs=make_set(IPAddress),
+                        Apps=make_set(UserAgent)
+                        by bin(Timestamp, 1h), AccountDisplayName, ActionType
+            | where array_length(Countries) > 1 or AccessCount > 50
+            | order by Timestamp desc
+
+  # -------------------------------------------------------------------------
+  # Domain 4: SharePoint and OneDrive
+  # Table: CloudAppEvents (Application: SharePoint Online, OneDrive for Business)
+  # -------------------------------------------------------------------------
+  - Format: KQL
+    Skills:
+
+      - Name: GetExternalSharingEvents
+        DisplayName: Get External Sharing Events
+        Description: Lists files and folders shared externally or via anonymous links in SharePoint and OneDrive to identify data exposure or sharing policy violations.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application in ("Microsoft SharePoint Online",
+                                    "Microsoft OneDrive for Business")
+            | where ActionType in ("SharingInvitationCreated", "AnonymousLinkCreated",
+                                   "SharingSet", "AddedToSecureLink",
+                                   "SharingInvitationAccepted")
+            | project Timestamp, ActionType, AccountDisplayName, AccountObjectId,
+                      IPAddress, ObjectName, ObjectType, AdditionalFields, Application
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetDLPPolicyViolations
+        DisplayName: Get DLP Policy Violations
+        Description: Returns Data Loss Prevention policy match events for sensitive file access or attempted exfiltration across SharePoint, OneDrive, and Exchange Online.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application in ("Microsoft SharePoint Online",
+                                    "Microsoft OneDrive for Business",
+                                    "Microsoft Exchange Online")
+            | where ActionType has_any ("DLPRuleMatch", "PolicyMatch",
+                                        "SensitiveInformationMatch")
+                or tostring(AdditionalFields) has "DLP"
+            | project Timestamp, ActionType, AccountDisplayName, AccountObjectId,
+                      ObjectName, ObjectType, IPAddress, Application, AdditionalFields
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetMassFileOperations
+        DisplayName: Get Mass File Operations
+        Description: Detects bulk file downloads or deletions in SharePoint and OneDrive aggregated per user per hour to identify potential data exfiltration activity.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+          - Name: threshold
+            Description: Minimum file operations per hour per user to flag as suspicious (default 50)
+            Required: false
+            Default: 50
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where Application in ("Microsoft SharePoint Online",
+                                    "Microsoft OneDrive for Business")
+            | where ActionType in ("FileDownloaded", "FileDeleted",
+                                   "FileMoved", "FilePreviewed")
+            | summarize OperationCount=count(),
+                        FileNames=make_set(ObjectName, 20)
+                        by bin(Timestamp, 1h), AccountDisplayName,
+                           AccountObjectId, ActionType, IPAddress, CountryCode
+            | where OperationCount >= {{threshold}}
+            | order by OperationCount desc
+            | take 100
+
+  # -------------------------------------------------------------------------
+  # Domain 5: Admin Audit
+  # Tables: CloudAppEvents, IdentityDirectoryEvents
+  # -------------------------------------------------------------------------
+  - Format: KQL
+    Skills:
+
+      - Name: GetO365AdminAuditEvents
+        DisplayName: Get O365 Admin Audit Events
+        Description: Searches the O365 unified audit log for admin activity by a specific user or account to investigate suspicious administrative actions across workloads.
+        Inputs:
+          - Name: adminUser
+            Description: Display name or ObjectId of the admin user to audit
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            CloudAppEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where AccountDisplayName =~ '{{adminUser}}'
+                or AccountObjectId =~ '{{adminUser}}'
+            | where ActionType has_any ("Set-", "New-", "Remove-", "Disable-",
+                                        "Enable-", "Update-", "Add-", "Delete-",
+                                        "Reset-", "Revoke-")
+            | project Timestamp, ActionType, AccountDisplayName, AccountObjectId,
+                      Application, ObjectName, ObjectType, IPAddress, AdditionalFields
+            | order by Timestamp desc
+            | take 200
+
+      - Name: GetEntraRoleChanges
+        DisplayName: Get Entra Role Changes
+        Description: Returns all Entra ID directory role assignment changes with actor details to audit privilege escalation and detect unauthorized role grants in the tenant.
+        Inputs:
+          - Name: lookbackDays
+            Description: Number of days to look back (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Target: Defender
+          Template: |
+            IdentityDirectoryEvents
+            | where Timestamp >= ago({{lookbackDays}}d)
+            | where ActionType in ("Add member to role", "Remove member from role",
+                                   "Add eligible member to role",
+                                   "Remove eligible member from role",
+                                   "Add scoped member to role",
+                                   "Remove scoped member from role")
+            | extend RoleName = tostring(AdditionalFields.["TARGET_OBJECT.Name"])
+            | project Timestamp, ActionType, AccountDisplayName, AccountUpn,
+                      TargetAccountDisplayName, TargetAccountUpn, RoleName,
+                      IPAddress, Location, AdditionalFields
+            | order by Timestamp desc
+            | take 200
+
+  # -------------------------------------------------------------------------
+  # Domain 6: Orchestration Agent
+  # -------------------------------------------------------------------------
+  - Format: AGENT
+    Skills:
+
+      - Name: O365IncidentInvestigationAgent
+        DisplayName: O365 Incident Investigation Agent
+        Description: Orchestrates all O365 security skills to investigate a user, email, or indicator, then produces a structured incident summary with severity and next actions.
+        Interfaces:
+          - Agent
+        Inputs:
+          - Name: indicator
+            Description: >
+              The indicator to investigate: a UPN (user@domain.com),
+              a NetworkMessageId GUID, a sender email address, or an IP address.
+            Required: true
+          - Name: lookbackDays
+            Description: Number of days to look back for all skills (default 7)
+            Required: false
+            Default: 7
+        Settings:
+          Model: gpt-4.1
+          Instructions: |
+            You are an expert Microsoft 365 security analyst. Investigate the provided
+            indicator using the available KQL skills and produce a structured incident report.
+
+            ## Step 1 — Classify the Indicator
+            Determine the indicator type:
+            - UPN: matches user@domain.com and is a known employee or account
+            - NetworkMessageId: a GUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+            - Sender address: an email address used as a sender, not a UPN
+            - IP address: numeric dotted-quad or IPv6 format
+
+            ## Step 2 — Email Investigation (NetworkMessageId)
+            If the indicator is a NetworkMessageId:
+            1. Call GetEmailByNetworkMessageId to retrieve full message details
+            2. Call GetEmailDeliveryTimeline to trace delivery and post-delivery history
+            3. If a sender address is identified, call GetEmailsFromSuspiciousSender
+
+            ## Step 3 — Sender/Campaign Investigation (sender email address)
+            If the indicator is a sender email address:
+            1. Call GetEmailsFromSuspiciousSender to list all recipients and volumes
+            2. Call GetEmailsWithMaliciousContent to find related malicious messages
+
+            ## Step 4 — User Investigation (UPN or ObjectId)
+            Run these skills in order using the provided lookbackDays (default 7):
+            1. GetRiskySignInsForUser — failed and risky authentication events
+            2. GetMFAStatusForUser — MFA enforcement gaps
+            3. GetConditionalAccessFailures — conditional access policy gaps
+            4. GetMailboxPermissionChanges — delegate/permission grants (BEC indicator)
+            5. GetMailForwardingRuleChanges — external forwarding rules (BEC persistence)
+            6. GetSuspiciousMailboxAccess — anomalous mailbox access patterns
+            7. GetExternalSharingEvents — data exposure via SharePoint/OneDrive
+            8. GetMassFileOperations — bulk download/deletion events
+
+            ## Step 5 — Admin Audit (always run for user investigations)
+            1. GetPrivilegedRoleChanges — role changes made by or affecting the user
+            2. GetEntraRoleChanges — Entra ID role assignment changes
+            3. GetO365AdminAuditEvents — admin actions performed by the user
+
+            ## Step 6 — Produce Incident Summary
+            Format your response as follows:
+
+            ### Incident Investigation Summary
+            **Indicator:** [value]
+            **Investigation Window:** Last [lookbackDays] days
+            **Overall Severity:** Critical | High | Medium | Low | Informational
+
+            #### Key Findings
+            [Bulleted list of significant findings from each skill that returned results]
+
+            #### Risk Assessment
+            [2-3 sentences explaining the severity determination and evidence basis]
+
+            #### Indicators of Compromise (IOCs)
+            [List any suspicious IPs, domains, file names, or accounts identified]
+
+            #### Recommended Next Actions
+            [Prioritized numbered remediation steps]
+
+            #### Evidence Summary
+            [List each skill run with: skill name | data returned (Yes/No) | notable count]
+        ChildSkills:
+          - GetEmailByNetworkMessageId
+          - GetEmailsFromSuspiciousSender
+          - GetEmailsWithMaliciousContent
+          - GetEmailDeliveryTimeline
+          - GetRiskySignInsForUser
+          - GetMFAStatusForUser
+          - GetPrivilegedRoleChanges
+          - GetConditionalAccessFailures
+          - GetMailboxPermissionChanges
+          - GetMailForwardingRuleChanges
+          - GetSuspiciousMailboxAccess
+          - GetExternalSharingEvents
+          - GetDLPPolicyViolations
+          - GetMassFileOperations
+          - GetO365AdminAuditEvents
+          - GetEntraRoleChanges
+
+AgentDefinitions:
+  - Name: O365SecurityInvestigation-Agent
+    DisplayName: O365 Security Investigation Agent
+    Description: >
+      Automated agent that investigates O365 security incidents by chaining email,
+      identity, mailbox, SharePoint, and admin audit skills into a single workflow.
+    Publisher: YourOrganization
+    Product: O365Security
+    RequiredSkillsets:
+      - O365SecurityCopilotSkillset
+    AgentSingleInstanceConstraint: None
+    Triggers:
+      - Name: OnDemand
+        DefaultPeriodSeconds: 0
+        ProcessSkill: O365SecurityCopilotSkillset.O365IncidentInvestigationAgent

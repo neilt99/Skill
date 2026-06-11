@@ -1,0 +1,76 @@
+{
+  "schema_version": "v2.1",
+  "name_for_human": "M365 Tenant Health and Admin Assistant",
+  "name_for_model": "M365TenantAdminAssistant",
+  "description_for_human": "Check Microsoft 365 service health, active incidents, message center announcements, and license usage for your tenant.",
+  "description_for_model": "Use this plugin to answer questions about Microsoft 365 tenant health and administration via Microsoft Graph API. Capabilities: (1) Check current health status of any M365 service such as Teams, Exchange Online, SharePoint, or OneDrive. (2) List and describe active service incidents or advisories. (3) Retrieve Message Center announcements about upcoming feature changes or required admin actions. (4) Summarize tenant license consumption and availability across all SKUs. (5) Look up which licenses are assigned to a specific user. Always prefer $filter and $select parameters to return focused, minimal data. When asked about a specific service, filter results to that service. When asked about active issues only, filter with isResolved eq false.",
+  "auth": {
+    "type": "OAuthAuthorizationCode",
+    "authorization_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "client_id": "<YOUR-APP-REGISTRATION-CLIENT-ID>",
+    "scopes": "https://graph.microsoft.com/ServiceHealth.Read.All https://graph.microsoft.com/Directory.Read.All https://graph.microsoft.com/User.Read.All"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "openapi.yaml"
+  },
+  "logo_url": "https://raw.githubusercontent.com/microsoft/fluentui-system-icons/main/assets/Pulse%20Square/SVG/ic_fluent_pulse_square_24_regular.svg",
+  "contact_email": "admin@contoso.com",
+  "legal_info_url": "https://privacy.microsoft.com",
+  "functions": [
+    {
+      "name": "getServiceHealthOverviews",
+      "description": "Get the current health status of all Microsoft 365 services. Use when the user asks whether a service is healthy, experiencing issues, or wants a summary of all service statuses."
+    },
+    {
+      "name": "getServiceHealthIssues",
+      "description": "Get current and recent service health incidents and advisories. Filter with isResolved eq false to see only active issues. Use when the user asks about outages, incidents, degradations, or what is currently broken in M365."
+    },
+    {
+      "name": "getServiceHealthIssueById",
+      "description": "Get the full details and status post history for a specific incident by its ID (e.g. MO123456). Use when the user references a specific incident tracking number or wants the full timeline of an issue."
+    },
+    {
+      "name": "getMessageCenterAnnouncements",
+      "description": "Get Message Center announcements about upcoming M365 changes, new features, and required admin actions. Use when the user asks about upcoming changes, required actions, what is changing in a specific service, or major changes this month."
+    },
+    {
+      "name": "getTenantLicenses",
+      "description": "Get a summary of all subscribed license SKUs in the tenant with purchased and consumed unit counts. Use when the user asks about license availability, how many licenses are left, or what licenses the tenant has."
+    },
+    {
+      "name": "getUserLicenseDetails",
+      "description": "Get the licenses currently assigned to a specific user by their User Principal Name or object ID. Use when the user asks what licenses a specific person has, or whether a user is licensed for a particular product."
+    }
+  ],
+  "runtimes": [
+    {
+      "type": "OpenApi",
+      "auth": {
+        "type": "OAuthAuthorizationCode",
+        "reference_id": "M365TenantAdminAssistant_oauth"
+      },
+      "spec": {
+        "url": "openapi.yaml"
+      },
+      "run_for_functions": [
+        "getServiceHealthOverviews",
+        "getServiceHealthIssues",
+        "getServiceHealthIssueById",
+        "getMessageCenterAnnouncements",
+        "getTenantLicenses",
+        "getUserLicenseDetails"
+      ]
+    }
+  ],
+  "capabilities": {
+    "conversation_starters": [
+      { "text": "Is there a Teams outage right now?" },
+      { "text": "What M365 incidents are active today?" },
+      { "text": "What changes are coming to Exchange Online next month?" },
+      { "text": "How many Microsoft 365 E3 licenses do we have left?" },
+      { "text": "What licenses does john.doe@contoso.com have?" }
+    ]
+  }
+}

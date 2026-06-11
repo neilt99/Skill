@@ -1,0 +1,468 @@
+openapi: 3.0.0
+info:
+  title: M365 Tenant Health and Admin Assistant
+  description: >
+    Microsoft Graph API operations for checking Microsoft 365 service health,
+    active incidents, message center announcements, tenant license usage,
+    and user license assignments.
+  version: 1.0.0
+  contact:
+    name: YourOrganization
+
+servers:
+  - url: https://graph.microsoft.com/v1.0
+    description: Microsoft Graph API v1.0
+
+security:
+  - oauth2:
+      - https://graph.microsoft.com/ServiceHealth.Read.All
+      - https://graph.microsoft.com/Directory.Read.All
+      - https://graph.microsoft.com/User.Read.All
+
+paths:
+
+  /admin/serviceAnnouncement/healthOverviews:
+    get:
+      operationId: getServiceHealthOverviews
+      summary: Get M365 service health overviews
+      description: >
+        Returns the current health status of all Microsoft 365 services in the tenant.
+        Use this to answer questions like "Is Teams healthy?" or "Which services have issues?"
+      parameters:
+        - name: $select
+          in: query
+          required: false
+          description: Comma-separated list of properties to include in the response
+          schema:
+            type: string
+            example: service,status,id
+        - name: $filter
+          in: query
+          required: false
+          description: OData filter expression (e.g. status ne 'serviceOperational')
+          schema:
+            type: string
+            example: "status ne 'serviceOperational'"
+      responses:
+        "200":
+          description: List of service health overviews
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceHealthOverview'
+
+  /admin/serviceAnnouncement/issues:
+    get:
+      operationId: getServiceHealthIssues
+      summary: Get active M365 service incidents and advisories
+      description: >
+        Returns current and recent service health incidents and advisories across
+        all Microsoft 365 services. Filter by isResolved eq false to see only
+        active issues. Use to answer "What outages are happening right now?"
+      parameters:
+        - name: $filter
+          in: query
+          required: false
+          description: OData filter (e.g. isResolved eq false to see only active issues)
+          schema:
+            type: string
+            example: "isResolved eq false"
+        - name: $select
+          in: query
+          required: false
+          description: Comma-separated properties to return
+          schema:
+            type: string
+            example: id,title,service,status,startDateTime,impactDescription,isResolved
+        - name: $top
+          in: query
+          required: false
+          description: Maximum number of issues to return (default 10)
+          schema:
+            type: integer
+            example: 10
+        - name: $orderby
+          in: query
+          required: false
+          description: OData orderby expression
+          schema:
+            type: string
+            example: startDateTime desc
+      responses:
+        "200":
+          description: List of service health issues
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceHealthIssue'
+
+  /admin/serviceAnnouncement/issues/{issueId}:
+    get:
+      operationId: getServiceHealthIssueById
+      summary: Get details of a specific M365 service incident
+      description: >
+        Returns full details of a specific service health incident by its ID,
+        including all status posts and the complete timeline of events.
+        Use when you need the full history and posts for a known incident ID.
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          description: The ID of the service health issue (e.g. MO123456 or EX123456)
+          schema:
+            type: string
+            example: MO123456
+      responses:
+        "200":
+          description: Service health issue details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceHealthIssueDetail'
+
+  /admin/serviceAnnouncement/messages:
+    get:
+      operationId: getMessageCenterAnnouncements
+      summary: Get Microsoft 365 message center announcements
+      description: >
+        Returns message center announcements about upcoming changes, new features,
+        and required actions in Microsoft 365. Use to answer questions like
+        "What changes are coming to Exchange?" or "Are there any required actions this month?"
+      parameters:
+        - name: $filter
+          in: query
+          required: false
+          description: >
+            OData filter expression. Common filters:
+            services/any(s:s eq 'Exchange Online'),
+            category eq 'planForChange',
+            isMajorChange eq true
+          schema:
+            type: string
+            example: "isMajorChange eq true"
+        - name: $select
+          in: query
+          required: false
+          description: Comma-separated properties to return
+          schema:
+            type: string
+            example: id,title,category,severity,services,startDateTime,actionRequiredByDateTime,isMajorChange
+        - name: $top
+          in: query
+          required: false
+          description: Maximum number of messages to return (default 20)
+          schema:
+            type: integer
+            example: 20
+        - name: $orderby
+          in: query
+          required: false
+          description: OData orderby expression
+          schema:
+            type: string
+            example: lastModifiedDateTime desc
+      responses:
+        "200":
+          description: List of message center announcements
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceUpdateMessage'
+
+  /subscribedSkus:
+    get:
+      operationId: getTenantLicenses
+      summary: Get tenant license summary
+      description: >
+        Returns all subscribed license SKUs for the tenant including total purchased
+        units, consumed units, and remaining availability. Use to answer questions
+        like "How many Teams licenses do we have left?" or "What licenses are we using?"
+      parameters:
+        - name: $select
+          in: query
+          required: false
+          description: Comma-separated properties to return
+          schema:
+            type: string
+            example: skuPartNumber,capabilityStatus,consumedUnits,prepaidUnits
+      responses:
+        "200":
+          description: List of subscribed license SKUs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubscribedSku'
+
+  /users/{userPrincipalName}/licenseDetails:
+    get:
+      operationId: getUserLicenseDetails
+      summary: Get license assignments for a specific user
+      description: >
+        Returns the licenses currently assigned to a specific user by their
+        User Principal Name or object ID. Use to answer "What licenses does
+        john.doe@contoso.com have?" or verify a user has the correct license.
+      parameters:
+        - name: userPrincipalName
+          in: path
+          required: true
+          description: >
+            The User Principal Name (e.g. user@contoso.com) or Entra object ID
+            of the user to look up
+          schema:
+            type: string
+            example: user@contoso.com
+      responses:
+        "200":
+          description: List of license details for the user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LicenseDetail'
+        "404":
+          description: User not found
+
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+          tokenUrl: https://login.microsoftonline.com/common/oauth2/v2.0/token
+          scopes:
+            https://graph.microsoft.com/ServiceHealth.Read.All: Read M365 service health and message center
+            https://graph.microsoft.com/Directory.Read.All: Read tenant license information
+            https://graph.microsoft.com/User.Read.All: Read user license assignments
+
+  schemas:
+    ServiceHealthOverview:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Service identifier (e.g. Exchange, Teams, SharePoint)
+        service:
+          type: string
+          description: Human-readable service name
+        status:
+          type: string
+          description: Current health status
+          enum:
+            - serviceOperational
+            - investigating
+            - restoringService
+            - verifyingService
+            - serviceRestored
+            - postIncidentReviewPublished
+            - serviceDegradation
+            - serviceInterruption
+            - extendedRecovery
+            - falsePositive
+            - investigationSuspended
+
+    ServiceHealthIssue:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Incident tracking ID (e.g. MO123456)
+        title:
+          type: string
+          description: Short title of the incident
+        service:
+          type: string
+          description: Affected service name
+        status:
+          type: string
+          description: Current incident status
+        classification:
+          type: string
+          description: Type of issue (incident or advisory)
+          enum: [incident, advisory]
+        startDateTime:
+          type: string
+          format: date-time
+          description: When the issue was first detected
+        endDateTime:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the issue was resolved (null if still active)
+        lastModifiedDateTime:
+          type: string
+          format: date-time
+        impactDescription:
+          type: string
+          description: Summary of user impact
+        isResolved:
+          type: boolean
+          description: Whether the issue has been resolved
+        highImpact:
+          type: boolean
+          nullable: true
+        feature:
+          type: string
+          description: Specific feature affected
+        featureGroup:
+          type: string
+
+    ServiceHealthIssueDetail:
+      allOf:
+        - $ref: '#/components/schemas/ServiceHealthIssue'
+        - type: object
+          properties:
+            posts:
+              type: array
+              description: Timeline of status updates for this incident
+              items:
+                type: object
+                properties:
+                  createdDateTime:
+                    type: string
+                    format: date-time
+                  postType:
+                    type: string
+                    enum: [regular, quick]
+                  description:
+                    type: object
+                    properties:
+                      contentType:
+                        type: string
+                      content:
+                        type: string
+                        description: Status update text
+
+    ServiceUpdateMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Message ID (e.g. MC123456)
+        title:
+          type: string
+          description: Title of the announcement
+        category:
+          type: string
+          description: Message category
+          enum: [preventOrFixIssue, planForChange, stayInformed]
+        severity:
+          type: string
+          enum: [normal, high, critical]
+        services:
+          type: array
+          items:
+            type: string
+          description: List of affected services
+        startDateTime:
+          type: string
+          format: date-time
+        endDateTime:
+          type: string
+          format: date-time
+          nullable: true
+        lastModifiedDateTime:
+          type: string
+          format: date-time
+        actionRequiredByDateTime:
+          type: string
+          format: date-time
+          nullable: true
+          description: Deadline for required admin action (null if no action needed)
+        isMajorChange:
+          type: boolean
+          description: Whether this is a major change requiring admin attention
+        tags:
+          type: array
+          items:
+            type: string
+          description: Labels such as New feature, Updated feature, etc.
+        body:
+          type: object
+          properties:
+            contentType:
+              type: string
+            content:
+              type: string
+              description: Full HTML or text body of the announcement
+
+    SubscribedSku:
+      type: object
+      properties:
+        skuId:
+          type: string
+          format: uuid
+        skuPartNumber:
+          type: string
+          description: License SKU identifier (e.g. ENTERPRISEPREMIUM, TEAMS_ESSENTIALS)
+        capabilityStatus:
+          type: string
+          description: Whether the subscription is active
+          enum: [Enabled, Warning, Suspended, Deleted, LockedOut]
+        consumedUnits:
+          type: integer
+          description: Number of licenses currently assigned
+        prepaidUnits:
+          type: object
+          properties:
+            enabled:
+              type: integer
+              description: Total purchased licenses
+            suspended:
+              type: integer
+            warning:
+              type: integer
+        appliesTo:
+          type: string
+          description: Who the license applies to (User or Company)
+
+    LicenseDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        skuId:
+          type: string
+          format: uuid
+        skuPartNumber:
+          type: string
+          description: License SKU identifier (e.g. ENTERPRISEPREMIUM)
+        servicePlans:
+          type: array
+          items:
+            type: object
+            properties:
+              servicePlanId:
+                type: string
+                format: uuid
+              servicePlanName:
+                type: string
+              provisioningStatus:
+                type: string
+                enum: [Success, Disabled, PendingInput, PendingActivation, PendingProvisioning]
+              appliesTo:
+                type: string
